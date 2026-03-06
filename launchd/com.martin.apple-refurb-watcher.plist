@@ -7,11 +7,11 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/martin/dev/mac_mini/apple-refurb-watcher/scripts/run_watcher.sh</string>
+        <string>/Users/martin/dev/apple-refurb-watcher/scripts/run_watcher.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/martin/dev/mac_mini/apple-refurb-watcher</string>
+    <string>/Users/martin/dev/apple-refurb-watcher</string>
 
     <key>StartInterval</key>
     <integer>300</integer>
@@ -20,9 +20,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/martin/dev/mac_mini/apple-refurb-watcher/logs/launchd_stdout.log</string>
+    <string>/Users/martin/dev/apple-refurb-watcher/logs/launchd_stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/martin/dev/mac_mini/apple-refurb-watcher/logs/launchd_stderr.log</string>
+    <string>/Users/martin/dev/apple-refurb-watcher/logs/launchd_stderr.log</string>
 </dict>
 </plist>
