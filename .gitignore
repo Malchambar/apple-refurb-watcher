@@ -6,6 +6,7 @@ venv/
 
 # Env / secrets
 .env
+.scrap.txt
 
 # Local data
 data/*.json
