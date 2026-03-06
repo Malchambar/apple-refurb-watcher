@@ -22,7 +22,7 @@ It checks the refurbished Macs page once per run, matches listings by keyword (d
 
 ```bash
 cd apple-refurb-watcher
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -58,7 +58,7 @@ Environment variables:
 Run one check manually:
 
 ```bash
-python -m src.main
+.venv/bin/python -m src.main
 ```
 
 Or use the helper script:
@@ -104,6 +104,7 @@ launchctl enable gui/$(id -u)/com.martin.apple-refurb-watcher
   - Allow your terminal (or launchd-invoked process context) to control `Messages`.
 - Confirm the recipient can be messaged from the Messages app manually.
 - Check `logs/watcher.log` and launchd stdout/stderr logs for errors.
+- If `python` is "command not found" with pyenv, use `.venv/bin/python` (or `venv/bin/python`) or `python3` explicitly.
 
 ## Notes
 
