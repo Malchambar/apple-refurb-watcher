@@ -41,14 +41,6 @@ def _parse_keywords(value: str | None) -> list[str]:
     return [part for part in parts if part] or ["Mac mini"]
 
 
-def mask_secret(value: str, unmasked_chars: int = 4) -> str:
-    if not value:
-        return "<empty>"
-    if len(value) <= (unmasked_chars * 2):
-        return "*" * len(value)
-    return f"{value[:unmasked_chars]}...{value[-unmasked_chars:]}"
-
-
 def load_config() -> AppConfig:
     env_file = PROJECT_ROOT / ".env"
     load_dotenv(dotenv_path=env_file)
@@ -103,8 +95,8 @@ def log_config_summary(config: AppConfig) -> None:
         config.request_timeout,
     )
     logger.info(
-        "Credential presence: pushover_user_key=%s pushover_app_token=%s imessage_recipient=%s",
-        mask_secret(config.pushover_user_key),
-        mask_secret(config.pushover_app_token),
-        mask_secret(config.imessage_recipient),
+        "Credential presence: pushover_user_key_present=%s pushover_app_token_present=%s imessage_recipient_present=%s",
+        bool(config.pushover_user_key),
+        bool(config.pushover_app_token),
+        bool(config.imessage_recipient),
     )
