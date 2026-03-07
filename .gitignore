@@ -8,9 +8,18 @@ venv/
 .env
 .scrap.txt
 
-# Local data
+# Runtime data
 data/*.json
-logs/*.log
+data/archive/*
+!data/archive/.gitkeep
+
+# Runtime logs
+logs/*
+!logs/.gitkeep
+
+# Local launchd
+launchd/*.plist
+!launchd/*.plist.template
 
 # macOS
 .DS_Store

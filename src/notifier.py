@@ -20,15 +20,41 @@ def _truncate(text: str, max_len: int = 300) -> str:
     return f"{text[:max_len]}...<truncated>"
 
 
-def _format_message(items: list[ProductEntry]) -> str:
-    lines = ["New Apple Refurb Match(es):"]
-    for item in items:
-        lines.append(f"- {item.title}")
-        lines.append(f"  {item.url}")
+def _format_item_message(item: ProductEntry) -> str:
+    lines = [f"{item.title} available"]
+    if item.memory:
+        lines.append(item.memory)
+    if item.storage:
+        lines.append(item.storage)
+    if item.price:
+        lines.append(item.price)
+    lines.append(item.url)
     return "\n".join(lines)
 
 
-def send_pushover_alert(config: AppConfig, message: str) -> None:
+def _format_group_message(items: list[ProductEntry], max_items: int = 3) -> str:
+    lines = [f"{len(items)} refurbished match(es) found"]
+    for item in items[:max_items]:
+        descriptor = item.title
+        if item.price:
+            descriptor = f"{descriptor} ({item.price})"
+        lines.append(descriptor)
+        if item.memory or item.storage:
+            tech_specs = " ".join(part for part in [item.memory or "", item.storage or ""] if part)
+            lines.append(tech_specs)
+        lines.append(item.url)
+    if len(items) > max_items:
+        lines.append(f"...and {len(items) - max_items} more")
+    return "\n".join(lines)
+
+
+def _format_message(items: list[ProductEntry]) -> str:
+    if len(items) == 1:
+        return _format_item_message(items[0])
+    return _format_group_message(items)
+
+
+def send_pushover_alert(config: AppConfig, message: str, *, title: str = "Apple Refurb Alert") -> None:
     logger.info("send_pushover_alert called. enable_pushover=%s", config.enable_pushover)
 
     if not config.enable_pushover:
@@ -45,7 +71,7 @@ def send_pushover_alert(config: AppConfig, message: str) -> None:
         payload = {
             "token": config.pushover_app_token,
             "user": config.pushover_user_key,
-            "title": "Apple Refurb Watcher",
+            "title": title,
             "message": message,
         }
         logger.info("Attempting Pushover HTTP POST to %s", PUSHOVER_URL)
@@ -102,13 +128,21 @@ def notify_new_items(config: AppConfig, items: list[ProductEntry], project_root:
         logger.info("No new matching items found.")
         return
 
-    message = _format_message(items)
-
     logger.info("New matching items detected: %s", len(items))
     for item in items:
-        logger.info("NEW: %s | %s", item.title, item.url)
+        logger.info(
+            "NEW: %s | url=%s | memory=%s | storage=%s | price=%s | source=%s",
+            item.title,
+            item.url,
+            item.memory,
+            item.storage,
+            item.price,
+            item.source,
+        )
 
-    send_pushover_alert(config, message)
+    message = _format_message(items)
+
+    send_pushover_alert(config, message, title="Apple Refurb Alert")
     send_imessage_alert(config, message, project_root=project_root)
 
     if not config.enable_pushover and not config.enable_imessage:
@@ -119,4 +153,4 @@ def notify_new_items(config: AppConfig, items: list[ProductEntry], project_root:
 def send_test_pushover_notification(config: AppConfig) -> None:
     message = "Apple Refurb Watcher test notification."
     logger.info("Triggering standalone Pushover test notification.")
-    send_pushover_alert(config, message)
+    send_pushover_alert(config, message, title="Apple Refurb Alert")

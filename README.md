@@ -2,12 +2,12 @@
 
 A small macOS-friendly Python watcher for Apple's U.S. refurbished Mac store.
 
-It checks the refurbished Macs page once per run, matches listings by keyword (default: `Mac mini`), and alerts only when **new** matching items appear.
+It checks the refurbished Macs page once per run, keeps only relevant structured products (`Mac mini`, optional `Mac Studio`), and alerts only on meaningful new changes.
 
 ## Purpose
 
-- Watch Apple's refurb Mac listings for specific model keywords.
-- Avoid duplicate alerts by storing previously seen matches.
+- Watch Apple's refurb inventory for relevant Mac mini (and optionally Mac Studio) listings.
+- Avoid duplicate alerts with compact product fingerprints.
 - Run cleanly with macOS `launchd` as a periodic one-shot job.
 
 ## Requirements
@@ -49,16 +49,64 @@ Environment variables:
 - `PUSHOVER_APP_TOKEN`: Pushover app token.
 - `ENABLE_IMESSAGE`: `true`/`false`.
 - `IMESSAGE_RECIPIENT`: iMessage handle (phone or email used by Messages).
-- `STATE_FILE`: Path to JSON state file.
+- `STATE_FILE`: Path to seen fingerprint file (default: `data/seen_items.json`).
 - `LOG_FILE`: Path to log file.
 - `REQUEST_TIMEOUT`: HTTP timeout in seconds.
 
+## Parsing Strategy (Structured First)
+
+The checker keeps the structured pipeline and uses parser preference caching:
+
+1. Preferred parser from `data/runtime_meta.json` (if available) is attempted first.
+2. Falls back through the standard pipeline:
+   - `json_feed`
+   - `json_ld`
+   - `html_cards`
+
+After parsing structured products, the watcher immediately filters to relevant models:
+
+- Always `Mac mini`
+- `Mac Studio` only if your configured keywords include studio
+
+## Fingerprint and State Strategy
+
+For each relevant product, the watcher builds compact hashes:
+
+- `config_fingerprint`: normalized `title + memory + storage`
+- `price_fingerprint`: `config_fingerprint + price`
+- `fingerprint`: `config_fingerprint + price + url`
+
+This allows distinguishing:
+
+- new configuration (`new_config`)
+- price changes on an existing configuration (`price_change`)
+- relisted entries with a new URL (`relisted`)
+
+State files:
+
+- `data/seen_items.json`: already-alerted listing fingerprints
+- `data/current_matches.json`: exact relevant matches from the latest run
+- `data/runtime_meta.json`: parser preference and last run timestamp
+- `data/archive/seen_items_YYYYmmdd_HHMMSS.json`: archived seen state on reset
+
 ## Manual Test (Single Run)
 
-Run one check manually:
+Normal run:
 
 ```bash
-.venv/bin/python -m src.main
+python3 -m src.main
+```
+
+Dry run (no notifications, no state writes):
+
+```bash
+python3 -m src.main --dry-run
+```
+
+Reset state (archive + clear, then exit):
+
+```bash
+python3 -m src.main --reset-state
 ```
 
 Or use the helper script:
@@ -69,43 +117,35 @@ Or use the helper script:
 
 ## launchd (LaunchAgent)
 
-The provided plist is in:
+The repo tracks only a template plist:
 
-- `launchd/com.martin.apple-refurb-watcher.plist`
+- `launchd/apple-refurb-watcher.plist.template`
 
-Copy it into your user LaunchAgents directory and load it:
-
-```bash
-mkdir -p ~/Library/LaunchAgents
-cp launchd/com.martin.apple-refurb-watcher.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.martin.apple-refurb-watcher.plist
-launchctl enable gui/$(id -u)/com.martin.apple-refurb-watcher
-```
-
-### Unload / Reload
-
-Unload:
+Generate and install your user-specific LaunchAgent plist:
 
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.martin.apple-refurb-watcher.plist
+./scripts/install_launch_agent.sh
 ```
 
-Reload:
+The installer generates:
+
+- `~/Library/LaunchAgents/com.<your-username>.apple-refurb-watcher.plist`
+
+and loads it with label:
+
+- `com.<your-username>.apple-refurb-watcher`
+
+Reload after plist updates:
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.martin.apple-refurb-watcher.plist
-launchctl enable gui/$(id -u)/com.martin.apple-refurb-watcher
+LABEL="com.$(id -un).apple-refurb-watcher"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+launchctl unload "$PLIST"
+./scripts/install_launch_agent.sh
 ```
-
-## Troubleshooting
-
-- If iMessage alerts fail, grant Automation permissions in macOS:
-  - `System Settings` -> `Privacy & Security` -> `Automation`
-  - Allow your terminal (or launchd-invoked process context) to control `Messages`.
-- Confirm the recipient can be messaged from the Messages app manually.
-- Check `logs/watcher.log` and launchd stdout/stderr logs for errors.
-- If `python` is "command not found" with pyenv, use `.venv/bin/python` (or `venv/bin/python`) or `python3` explicitly.
 
 ## Notes
 
-- Apple's HTML structure can change over time. If parsing stops finding expected items, update `src/checker.py` selectors and text extraction logic.
+- Apple page structure and feed behavior may change over time. If JSON feed discovery or selectors stop yielding products, update `src/checker.py` parser heuristics.
+- Runtime directories (`logs/`, `data/`, `data/archive/`) are auto-created at startup.
+- Runtime logs/state are intentionally gitignored; `.gitkeep` files preserve directory structure only.
