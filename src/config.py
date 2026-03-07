@@ -21,6 +21,9 @@ class AppConfig:
     pushover_app_token: str
     enable_imessage: bool
     imessage_recipient: str
+    heartbeat_enabled: bool
+    heartbeat_interval_hours: float
+    startup_notify_enabled: bool
     state_file: Path
     log_file: Path
     request_timeout: float
@@ -54,6 +57,19 @@ def load_config() -> AppConfig:
     pushover_app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
     enable_imessage = _parse_bool(os.getenv("ENABLE_IMESSAGE"), default=False)
     imessage_recipient = os.getenv("IMESSAGE_RECIPIENT", "").strip()
+    heartbeat_enabled = _parse_bool(os.getenv("HEARTBEAT_ENABLED"), default=False)
+    startup_notify_enabled = _parse_bool(
+        os.getenv("STARTUP_NOTIFY_ENABLED"),
+        default=True,
+    )
+
+    heartbeat_interval_raw = os.getenv("HEARTBEAT_INTERVAL_HOURS", "6").strip()
+    try:
+        heartbeat_interval_hours = float(heartbeat_interval_raw)
+        if heartbeat_interval_hours <= 0:
+            heartbeat_interval_hours = 6.0
+    except ValueError:
+        heartbeat_interval_hours = 6.0
 
     state_file = Path(os.getenv("STATE_FILE", "data/seen_items.json"))
     log_file = Path(os.getenv("LOG_FILE", "logs/watcher.log"))
@@ -76,6 +92,9 @@ def load_config() -> AppConfig:
         pushover_app_token=pushover_app_token,
         enable_imessage=enable_imessage,
         imessage_recipient=imessage_recipient,
+        heartbeat_enabled=heartbeat_enabled,
+        heartbeat_interval_hours=heartbeat_interval_hours,
+        startup_notify_enabled=startup_notify_enabled,
         state_file=state_file,
         log_file=log_file,
         request_timeout=request_timeout,
@@ -87,11 +106,14 @@ def load_config() -> AppConfig:
 def log_config_summary(config: AppConfig) -> None:
     logger.info("Config loaded from .env path: %s exists=%s", config.env_file, config.env_file.exists())
     logger.info(
-        "Config summary: keywords=%s enable_pushover=%s enable_imessage=%s force_notify=%s timeout=%s",
+        "Config summary: keywords=%s enable_pushover=%s enable_imessage=%s force_notify=%s startup_notify_enabled=%s heartbeat_enabled=%s heartbeat_interval_hours=%s timeout=%s",
         ", ".join(config.match_keywords),
         config.enable_pushover,
         config.enable_imessage,
         config.force_notify,
+        config.startup_notify_enabled,
+        config.heartbeat_enabled,
+        config.heartbeat_interval_hours,
         config.request_timeout,
     )
     logger.info(

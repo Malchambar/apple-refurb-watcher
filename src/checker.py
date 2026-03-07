@@ -13,11 +13,14 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "apple-refurb-watcher/1.0 (+https://www.apple.com/shop/refurbished/mac)"
-PARSER_SOURCES = ("json_feed", "json_ld", "html_cards")
+PARSER_SOURCES = ("json_ld", "html_cards", "json_feed")
 
-RAM_PATTERN = re.compile(r"\b(16|24|32|36|48|64|96|128)\s*GB\b", re.IGNORECASE)
+RAM_PATTERN = re.compile(r"\b(\d+)\s*GB(?:\s*(?:unified\s*)?memory|\s*RAM)\b", re.IGNORECASE)
 STORAGE_PATTERN = re.compile(r"\b(256GB|512GB|1TB|2TB|4TB|8TB)\s*SSD\b", re.IGNORECASE)
 PRICE_PATTERN = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?")
+CHIP_PATTERN = re.compile(r"\b(M[1-9](?:\s*(?:Pro|Max|Ultra))?)\b", re.IGNORECASE)
+CPU_CORES_PATTERN = re.compile(r"\b(\d+)\s*[- ]?core\s*CPU\b", re.IGNORECASE)
+GPU_CORES_PATTERN = re.compile(r"\b(\d+)\s*[- ]?core\s*GPU\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -26,10 +29,15 @@ class ProductEntry:
     title: str
     url: str
     price: str | None
+    family: str | None
+    chip: str | None
+    cpu_cores: int | None
+    gpu_cores: int | None
     memory: str | None
     storage: str | None
     raw_text: str
     source: str
+    dwell_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -63,8 +71,11 @@ def _stable_id(title: str, url: str, candidate_id: str | None = None) -> str:
 def _extract_memory(text: str) -> str | None:
     match = RAM_PATTERN.search(text)
     if not match:
-        return None
-    return f"{match.group(1).upper()}GB RAM"
+        generic = re.search(r"\b(16|24|32|36|48|64|96|128)\s*GB\b", text, flags=re.IGNORECASE)
+        if not generic:
+            return None
+        return f"{generic.group(1)}GB RAM"
+    return f"{match.group(1)}GB RAM"
 
 
 def _extract_storage(text: str) -> str | None:
@@ -85,6 +96,36 @@ def _extract_price_from_text(text: str) -> str | None:
     return match.group(0).replace(" ", "")
 
 
+def _extract_family(text: str) -> str | None:
+    lowered = text.lower()
+    if "mac studio" in lowered:
+        return "Mac Studio"
+    if "mac mini" in lowered:
+        return "Mac mini"
+    return None
+
+
+def _extract_chip(text: str) -> str | None:
+    match = CHIP_PATTERN.search(text)
+    if not match:
+        return None
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _extract_cpu_cores(text: str) -> int | None:
+    match = CPU_CORES_PATTERN.search(text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _extract_gpu_cores(text: str) -> int | None:
+    match = GPU_CORES_PATTERN.search(text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def _build_entry(
     *,
     base_url: str,
@@ -101,6 +142,10 @@ def _build_entry(
         return None
 
     details_text = " ".join(part for part in [normalized_title, raw_text, price or ""] if part)
+    family = _extract_family(details_text)
+    chip = _extract_chip(details_text)
+    cpu_cores = _extract_cpu_cores(details_text)
+    gpu_cores = _extract_gpu_cores(details_text)
     memory = _extract_memory(details_text)
     storage = _extract_storage(details_text)
     normalized_price = (price or "").strip() or _extract_price_from_text(details_text)
@@ -110,6 +155,10 @@ def _build_entry(
         title=normalized_title,
         url=normalized_url,
         price=normalized_price,
+        family=family,
+        chip=chip,
+        cpu_cores=cpu_cores,
+        gpu_cores=gpu_cores,
         memory=memory,
         storage=storage,
         raw_text=_normalize_title(raw_text),
@@ -149,27 +198,27 @@ def _discover_json_feed_urls(html: str, source_url: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: set[str] = set()
 
-    attr_names = ["data-endpoint", "data-api-url", "data-url", "data-feed-url"]
+    attr_names = [
+        "data-endpoint",
+        "data-api-url",
+        "data-url",
+        "data-feed-url",
+        "data-automodule-endpoint",
+    ]
     for attr in attr_names:
         for node in soup.select(f"[{attr}]"):
             value = (node.get(attr) or "").strip()
             if value:
                 candidates.add(_normalize_url(source_url, value))
 
-    for script in soup.select("script[src]"):
-        src = (script.get("src") or "").strip()
-        if not src:
+    for script in soup.select('script[type="application/json"], script[type="application/ld+json"]'):
+        text = script.get_text(" ", strip=True)
+        if not text:
             continue
-        full = _normalize_url(source_url, src)
-        if any(token in full.lower() for token in ["json", "api", "search", "refurb", "inventory"]):
-            candidates.add(full)
-
-    for match in re.findall(r"['\"](https?://[^'\"]+|/[^'\"]+)['\"]", html):
-        lowered = match.lower()
-        if any(ext in lowered for ext in [".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ttf"]):
-            continue
-        if any(token in lowered for token in [".json", "api", "search", "refurb", "inventory", "products"]):
-            candidates.add(_normalize_url(source_url, match))
+        for match in re.findall(r"['\"](https?://[^'\"]+|/[^'\"]+)['\"]", text):
+            lowered = match.lower()
+            if any(token in lowered for token in [".json", "api", "refurb", "inventory", "products"]):
+                candidates.add(_normalize_url(source_url, match))
 
     filtered = [url for url in candidates if url.startswith("http")]
     return sorted(filtered)[:12]
@@ -218,6 +267,11 @@ def _extract_entries_from_json(payload: Any, base_url: str, source: str) -> list
             title = node.get("title") or node.get("name") or node.get("productName")
             url = node.get("url") or node.get("href") or node.get("productUrl") or node.get("link")
             if isinstance(title, str) and isinstance(url, str):
+                normalized_candidate_url = _normalize_url(base_url, url)
+                if "/shop/product/" not in normalized_candidate_url:
+                    for value in node.values():
+                        walk(value)
+                    return
                 entry = _build_entry(
                     base_url=base_url,
                     title=title,
@@ -321,6 +375,9 @@ def try_extract_json_ld(html: str, source_url: str) -> list[ProductEntry]:
             url = node.get("url")
             if not isinstance(title, str) or not isinstance(url, str):
                 continue
+            normalized_candidate_url = _normalize_url(source_url, url)
+            if "/shop/product/" not in normalized_candidate_url:
+                continue
 
             entry = _build_entry(
                 base_url=source_url,
@@ -363,10 +420,7 @@ def try_extract_product_cards(html: str, source_url: str) -> list[ProductEntry]:
     soup = BeautifulSoup(html, "html.parser")
     entries: list[ProductEntry] = []
 
-    selectors = [
-        'a[href*="/shop/product/"]',
-        'a[href*="/shop/buy-mac/"]',
-    ]
+    selectors = ['a[href*="/shop/product/"]']
 
     for selector in selectors:
         for anchor in soup.select(selector):
@@ -375,6 +429,8 @@ def try_extract_product_cards(html: str, source_url: str) -> list[ProductEntry]:
             if not href or not title:
                 continue
             if len(title) < 8:
+                continue
+            if "/shop/product/" not in _normalize_url(source_url, href):
                 continue
 
             raw_text = _normalize_title(anchor.parent.get_text(" ", strip=True) if anchor.parent else title)
@@ -447,6 +503,7 @@ def parse_products(
         parser = parser_map[source_name]
         try:
             products = parser()
+            logger.info("Parser attempt: source=%s parsed_products=%s", source_name, len(products))
             if products:
                 return ParseResult(source=source_name, products=products)
         except Exception as exc:
