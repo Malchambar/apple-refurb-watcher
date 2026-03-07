@@ -1,151 +1,228 @@
 # apple-refurb-watcher
 
-A small macOS-friendly Python watcher for Apple's U.S. refurbished Mac store.
+`apple-refurb-watcher` monitors Apple's refurbished Mac store, parses structured product listings, and sends notifications when new relevant matches appear (for example, `Mac mini`, optionally `Mac Studio`). It is also set up as a reusable starter template for other scheduled watcher/scraper projects: parser pipeline, state handling, notifications, logging, and macOS `launchd` automation are already wired.
 
-It checks the refurbished Macs page once per run, keeps only relevant structured products (`Mac mini`, optional `Mac Studio`), and alerts only on meaningful new changes.
+## Features
 
-## Purpose
+- Structured extraction pipeline with parser fallback (`json_feed` -> `json_ld` -> `html_cards`) and preferred-parser caching.
+- Relevant model filtering for `Mac mini` and optional `Mac Studio`.
+- Fingerprint-based state tracking to avoid duplicate alerts.
+- `current_matches` snapshots and runtime metadata for change detection and parser preference.
+- Pushover notifications (plus optional iMessage path already present in code).
+- Manual state reset with archive support.
+- macOS `launchd` scheduling via tracked plist template + install script.
+- Runtime directory auto-creation at startup (`logs/`, `data/`, `data/archive/`).
+- Git-friendly runtime handling (`.gitignore` + `.gitkeep` placeholders).
 
-- Watch Apple's refurb inventory for relevant Mac mini (and optionally Mac Studio) listings.
-- Avoid duplicate alerts with compact product fingerprints.
-- Run cleanly with macOS `launchd` as a periodic one-shot job.
+## Repository Structure
+
+- `src/`: Core app logic.
+  - `checker.py`: Fetching + structured parsing pipeline.
+  - `state.py`: fingerprints, seen/current/runtime state, reset/archive logic.
+  - `notifier.py`: Pushover/iMessage notifications.
+  - `main.py`: CLI entrypoint and run orchestration.
+- `scripts/`: Utility scripts.
+  - `run_watcher.sh`: Convenience runner.
+  - `install_launch_agent.sh`: Installs per-user LaunchAgent plist from template.
+- `launchd/`: LaunchAgent template tracked in git.
+  - `apple-refurb-watcher.plist.template`
+- `data/`: Runtime state (ignored in git).
+  - tracked placeholder: `data/archive/.gitkeep`
+  - runtime files: `seen_items.json`, `current_matches.json`, `runtime_meta.json`, archived reset files
+- `logs/`: Runtime logs (ignored in git).
+  - tracked placeholder: `logs/.gitkeep`
+- `.env.example`: Example local configuration.
+- `.gitignore`: Ignore rules for runtime artifacts and local launchd files.
+- `README.md`: This guide.
 
 ## Requirements
 
-- macOS
 - Python 3.11+
+- macOS for `launchd` automation (manual runs work anywhere Python dependencies work)
+- Dependencies in `requirements.txt` (currently `beautifulsoup4`, `python-dotenv`, `requests`)
+- Optional Pushover account/app if you want push alerts
 
-## Setup
+## Quick Start
 
-1. Clone or copy this project.
-2. Create and activate a virtualenv:
+1. Clone the repo.
+2. Create a virtual environment.
+3. Install dependencies.
+4. Create local `.env`.
+5. Run once manually.
 
 ```bash
+git clone <your-repo-url>
 cd apple-refurb-watcher
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-3. Install dependencies:
-
-```bash
 pip install -r requirements.txt
+cp .env.example .env
+python -m src.main
 ```
 
 ## Environment Configuration
 
-Copy `.env.example` to `.env` and edit values:
+All runtime config comes from `.env`.
 
-```bash
-cp .env.example .env
-```
-
-Environment variables:
-
-- `APPLE_REFURB_URL`: Apple page URL to fetch.
-- `MATCH_KEYWORDS`: Comma-separated keywords (example: `Mac mini,Mac Studio`).
-- `ENABLE_PUSHOVER`: `true`/`false`.
+- `APPLE_REFURB_URL`: Source page URL to fetch.
+- `MATCH_KEYWORDS`: Comma-separated keywords; also controls whether `Mac Studio` is included.
+- `ENABLE_PUSHOVER`: `true/false` toggle for Pushover.
 - `PUSHOVER_USER_KEY`: Pushover user key.
 - `PUSHOVER_APP_TOKEN`: Pushover app token.
-- `ENABLE_IMESSAGE`: `true`/`false`.
-- `IMESSAGE_RECIPIENT`: iMessage handle (phone or email used by Messages).
-- `STATE_FILE`: Path to seen fingerprint file (default: `data/seen_items.json`).
-- `LOG_FILE`: Path to log file.
+- `ENABLE_IMESSAGE`: `true/false` toggle for iMessage notifications (optional).
+- `IMESSAGE_RECIPIENT`: iMessage target (email/phone tied to Messages) when iMessage is enabled.
+- `STATE_FILE`: Path for seen fingerprint state file (default `data/seen_items.json`).
+- `LOG_FILE`: Path for watcher log file (default `logs/watcher.log`).
 - `REQUEST_TIMEOUT`: HTTP timeout in seconds.
+- `FORCE_NOTIFY`: If `true`, can send notifications even when all current matches are already seen.
+- `TEST_MODE`: Backward-compat alias influencing default `FORCE_NOTIFY` behavior.
 
-## Parsing Strategy (Structured First)
-
-The checker keeps the structured pipeline and uses parser preference caching:
-
-1. Preferred parser from `data/runtime_meta.json` (if available) is attempted first.
-2. Falls back through the standard pipeline:
-   - `json_feed`
-   - `json_ld`
-   - `html_cards`
-
-After parsing structured products, the watcher immediately filters to relevant models:
-
-- Always `Mac mini`
-- `Mac Studio` only if your configured keywords include studio
-
-## Fingerprint and State Strategy
-
-For each relevant product, the watcher builds compact hashes:
-
-- `config_fingerprint`: normalized `title + memory + storage`
-- `price_fingerprint`: `config_fingerprint + price`
-- `fingerprint`: `config_fingerprint + price + url`
-
-This allows distinguishing:
-
-- new configuration (`new_config`)
-- price changes on an existing configuration (`price_change`)
-- relisted entries with a new URL (`relisted`)
-
-State files:
-
-- `data/seen_items.json`: already-alerted listing fingerprints
-- `data/current_matches.json`: exact relevant matches from the latest run
-- `data/runtime_meta.json`: parser preference and last run timestamp
-- `data/archive/seen_items_YYYYmmdd_HHMMSS.json`: archived seen state on reset
-
-## Manual Test (Single Run)
+## Running Manually
 
 Normal run:
 
 ```bash
-python3 -m src.main
+python -m src.main
 ```
 
-Dry run (no notifications, no state writes):
+Dry run (parsing + matching only; no notifications or state writes):
 
 ```bash
-python3 -m src.main --dry-run
+python -m src.main --dry-run
 ```
 
-Reset state (archive + clear, then exit):
+Reset state (archive seen state, clear seen/current/runtime files, then exit):
 
 ```bash
-python3 -m src.main --reset-state
+python -m src.main --reset-state
 ```
 
-Or use the helper script:
+Standalone notifier test:
 
 ```bash
-./scripts/run_watcher.sh
+python -m src.main --test-notifier
 ```
 
-## launchd (LaunchAgent)
+## Notifications
 
-The repo tracks only a template plist:
+Pushover is the primary alert path in this project.
+
+- Enable with `ENABLE_PUSHOVER=true`.
+- Provide `PUSHOVER_USER_KEY` and `PUSHOVER_APP_TOKEN`.
+- Alerts include title, memory/storage (if found), price (if found), and product URL.
+
+Quick credential sanity check with `curl`:
+
+```bash
+curl -sS https://api.pushover.net/1/messages.json \
+  -d "token=<PUSHOVER_APP_TOKEN>" \
+  -d "user=<PUSHOVER_USER_KEY>" \
+  -d "title=Watcher Test" \
+  -d "message=Credential check"
+```
+
+Do not commit real keys.
+
+## macOS launchd Setup
+
+This repo tracks only a template plist:
 
 - `launchd/apple-refurb-watcher.plist.template`
 
-Generate and install your user-specific LaunchAgent plist:
+Install a real user-specific LaunchAgent plist:
 
 ```bash
 ./scripts/install_launch_agent.sh
 ```
 
-The installer generates:
+What the installer does:
 
-- `~/Library/LaunchAgents/com.<your-username>.apple-refurb-watcher.plist`
+- Builds label: `com.$(id -un).apple-refurb-watcher`
+- Replaces template placeholders (`__LABEL__`, `__PROJECT_DIR__`)
+- Writes plist to `~/Library/LaunchAgents/<label>.plist`
+- Unloads existing matching agent (if present)
+- Loads the new plist
 
-and loads it with label:
-
-- `com.<your-username>.apple-refurb-watcher`
-
-Reload after plist updates:
+Useful commands:
 
 ```bash
 LABEL="com.$(id -un).apple-refurb-watcher"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+launchctl list | grep apple-refurb
+launchctl print gui/$(id -u)/${LABEL}
+cat "$PLIST"
+```
+
+Reload after template/script updates:
+
+```bash
 launchctl unload "$PLIST"
 ./scripts/install_launch_agent.sh
 ```
 
-## Notes
+Unload/disable:
 
-- Apple page structure and feed behavior may change over time. If JSON feed discovery or selectors stop yielding products, update `src/checker.py` parser heuristics.
-- Runtime directories (`logs/`, `data/`, `data/archive/`) are auto-created at startup.
-- Runtime logs/state are intentionally gitignored; `.gitkeep` files preserve directory structure only.
+```bash
+launchctl unload "$PLIST"
+```
+
+## Runtime Files and Git Behavior
+
+- Runtime logs and JSON state files are intentionally gitignored.
+- `.gitkeep` files keep empty directory structure in git (`logs/.gitkeep`, `data/archive/.gitkeep`).
+- Local generated launchd plists (`launchd/*.plist` and installed plist under `~/Library/LaunchAgents`) are not tracked.
+
+This keeps commits clean and makes the repo portable across machines/users.
+
+## How Matching Works
+
+1. Fetch Apple refurb page HTML.
+2. Parse structured products with fallback strategy.
+3. Normalize product fields (title/url/price/memory/storage/source).
+4. Filter to relevant models (`Mac mini`, optional `Mac Studio`).
+5. Build compact fingerprints.
+6. Compare against seen fingerprints and previous current snapshot.
+7. Notify only for new changes.
+8. Save updated state snapshots and runtime metadata.
+
+## Adapting This Repo for Other Watcher/Scraper Projects
+
+You can keep most of the scaffolding and swap target-specific logic.
+
+- Replace parser logic in `src/checker.py` for your new source.
+- Update matching rules/keywords in `.env` and checker filters.
+- Reuse `src/state.py` fingerprint + change detection approach.
+- Reuse notifications in `src/notifier.py`.
+- Reuse scheduling with `scripts/install_launch_agent.sh` + plist template.
+
+Good template use cases:
+
+- Another Apple inventory watcher.
+- Real-estate listing/article watcher.
+- Competitor price monitor.
+- Product restock watcher.
+
+## Troubleshooting
+
+- Wrong Python interpreter / stale venv:
+  - Recreate venv and reinstall requirements.
+  - Verify `python -m src.main` uses the intended interpreter.
+- `launchd` path issues:
+  - Rerun `./scripts/install_launch_agent.sh` after moving repo path.
+- Stale installed LaunchAgent plist:
+  - `launchctl unload "$PLIST"` then rerun installer.
+- `.gitignore` vs `.gitkeep` confusion:
+  - `.gitkeep` preserves folders; runtime files in those folders stay ignored.
+- Pushover works with `curl` but not in app:
+  - Check `.env` values, `ENABLE_PUSHOVER=true`, and logs for missing credentials.
+- No notifications received:
+  - There may be no new matching products; run with `--dry-run` and inspect logs/state files.
+
+## Future Improvements
+
+- Split parser logic into source-specific modules.
+- Add generic config-driven watcher modes.
+- Add richer notification formatting/routing.
+- Add a lightweight dashboard/web UI for runs/state.
+- Persist richer change history (beyond latest current snapshot).
