@@ -11,6 +11,8 @@
 - Listing lifecycle is tracked in DB (`appeared`, `still available`, `disappeared`).
 - Startup/heartbeat/product alerts still exist conceptually, now backed by DB app-state.
 
+If you want the original lightweight JSON MVP baseline, use the `v1-json-mvp` tag on `main`.
+
 ## Architecture
 
 - `src/checker.py`: fetch + structured parsing (`json_ld -> html_cards -> json_feed` with preferred parser cache).
@@ -53,6 +55,7 @@ This supports “track each listing lifecycle” and “aggregate by machine con
 - `STARTUP_NOTIFY_ENABLED`: startup notification toggle.
 - `HEARTBEAT_ENABLED`, `HEARTBEAT_INTERVAL_HOURS`: heartbeat behavior.
 - `LOG_FILE`, `REQUEST_TIMEOUT`, `FORCE_NOTIFY`.
+- `TEST_MODE`: legacy alias used as a fallback default for `FORCE_NOTIFY`.
 
 ## Quick Start
 
@@ -91,6 +94,24 @@ python -m src.main --test-notifier
 ## launchd
 
 Existing launchd template/installer flow is unchanged:
+
+```bash
+./scripts/install_launch_agent.sh
+```
+
+Important operational notes:
+
+- This watcher is a scheduled short-lived process, not a long-running daemon.
+- `launchd` invokes `scripts/run_watcher.sh` each interval (`RunAtLoad` + `StartInterval` in the plist).
+- `.env` changes are picked up on the next scheduled run because each run starts a new Python process.
+- If you are switching branches while the LaunchAgent is enabled, unload first to avoid code/state mismatches:
+
+```bash
+LABEL="com.$(id -un).apple-refurb-watcher"
+launchctl bootout "gui/$(id -u)/${LABEL}" || true
+```
+
+After switching branches, reinstall/reload:
 
 ```bash
 ./scripts/install_launch_agent.sh
@@ -165,3 +186,4 @@ Expected: successful availability/disappearance alert updates `last_successful_n
 - Timestamps are UTC.
 - `create_all()` is used for schema creation in this branch (no migration framework yet).
 - Old JSON runtime files are no longer the primary state system; SQLite is now the source of truth.
+- `MATCH_KEYWORDS` controls alerting only; ingestion still stores all parsed inventory from `APPLE_REFURB_URL`.

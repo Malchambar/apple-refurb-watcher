@@ -11,6 +11,9 @@ venv/
 # Runtime data
 data/*.json
 data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
 data/archive/*
 !data/archive/.gitkeep
 
