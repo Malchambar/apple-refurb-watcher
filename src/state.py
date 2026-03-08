@@ -1,256 +1,160 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+
+from sqlalchemy import Select, select
+from sqlalchemy.orm import Session
 
 from src.checker import ProductEntry
+from src.models import AppState, Listing, ListingObservation, PollRun, ProductConfig
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class MatchRecord:
-    listing_id: str
-    config_id: str
-    fingerprint: str
-    config_fingerprint: str
-    price_fingerprint: str
-    title: str
-    family: str | None
-    chip: str | None
-    cpu_cores: int | None
-    gpu_cores: int | None
-    memory: str | None
-    storage: str | None
-    price: str | None
-    url: str
-    source: str
-    first_seen_at: str
-    last_seen_at: str
+STATE_LAST_SUCCESS_AT = "last_successful_notification_at"
+STATE_STARTUP_SENT = "startup_notification_sent"
+STATE_PREFERRED_PARSER = "preferred_parser"
+STATE_TOTAL_RUNS = "total_poll_runs"
+STATE_RUNS_SINCE_NOTIFY = "runs_since_last_successful_notification"
+STATE_ZERO_MATCH_RUNS = "zero_match_runs_since_last_successful_notification"
+STATE_MATCHING_RUNS = "matching_runs_since_last_successful_notification"
+STATE_MATCHING_PRODUCTS = "matching_products_seen_since_last_successful_notification"
 
 
 @dataclass(frozen=True)
-class MatchChange:
-    change_type: str
-    record: MatchRecord
+class InventorySyncResult:
+    new_alert_products: list[ProductEntry]
+    removed_alert_products: list[ProductEntry]
+    total_products_found: int
+    relevant_products_found: int
 
 
-@dataclass(frozen=True)
-class RemovedMatch:
-    record: MatchRecord
-    disappeared_at: str
-    dwell_seconds: int
+def _utc_now(now: datetime | None = None) -> datetime:
+    value = now or datetime.now(UTC)
+    return value.astimezone(UTC)
 
 
-def _timestamp_now() -> str:
-    return datetime.now(UTC).isoformat()
+def _short_hash(parts: list[str]) -> str:
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:24]
 
 
 def _normalize_text(value: str | None) -> str:
     return " ".join((value or "").strip().lower().split())
 
 
-def _normalize_price(value: str | None) -> str:
-    raw = _normalize_text(value)
-    return raw.replace(" ", "") if raw else "none"
+def _contains_phrase(text: str, phrase: str) -> bool:
+    if not text or not phrase:
+        return False
+    pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
+    return re.search(pattern, text) is not None
 
 
-def _normalize_url(value: str) -> str:
-    return value.strip().lower().rstrip("/")
+def _extract_listing_key(item: ProductEntry) -> str:
+    stable = (item.id or "").strip().lower()
+    if stable:
+        return stable
+    return _short_hash([_normalize_text(item.title), _normalize_text(item.url), _normalize_text(item.price)])
 
 
-def _short_hash(parts: list[str]) -> str:
-    joined = "|".join(parts)
-    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:16]
+def _extract_memory_gb(value: str | None) -> int | None:
+    match = re.search(r"(\d+)\s*gb", value or "", flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
-def _extract_listing_id(url: str, fallback_parts: list[str]) -> str:
-    normalized = _normalize_url(url)
-    if "/shop/product/" in normalized:
-        tail = normalized.split("/shop/product/", 1)[1].split("/", 1)[0].strip()
-        if tail:
-            return tail
-    if normalized:
-        return normalized
-    return _short_hash(fallback_parts)
+def _extract_storage_gb(value: str | None) -> int | None:
+    text = (value or "").lower()
+    match_tb = re.search(r"(\d+)\s*tb", text)
+    if match_tb:
+        return int(match_tb.group(1)) * 1024
+    match_gb = re.search(r"(\d+)\s*gb", text)
+    if match_gb:
+        return int(match_gb.group(1))
+    return None
 
 
-def _build_config_id(
-    *,
-    family_norm: str,
-    chip_norm: str,
-    cpu_norm: str,
-    gpu_norm: str,
-    memory_norm: str,
-    storage_norm: str,
-) -> str:
+def _build_config_key(item: ProductEntry) -> str:
     parts = [
-        family_norm or "unknown-family",
-        chip_norm or "unknown-chip",
-        cpu_norm or "unknown-cpu",
-        gpu_norm or "unknown-gpu",
-        memory_norm or "unknown-memory",
-        storage_norm or "unknown-storage",
+        _normalize_text(item.family),
+        _normalize_text(item.chip),
+        str(item.cpu_cores or ""),
+        str(item.gpu_cores or ""),
+        str(_extract_memory_gb(item.memory) or ""),
+        str(_extract_storage_gb(item.storage) or ""),
     ]
     return _short_hash(parts)
 
 
-def build_match_record(item: ProductEntry) -> MatchRecord:
+def matches_alert_filter(item: ProductEntry, keywords: list[str]) -> bool:
+    if not keywords:
+        return False
+    title_norm = _normalize_text(item.title)
     family_norm = _normalize_text(item.family)
     chip_norm = _normalize_text(item.chip)
-    cpu_norm = _normalize_text(str(item.cpu_cores) if item.cpu_cores is not None else "")
-    gpu_norm = _normalize_text(str(item.gpu_cores) if item.gpu_cores is not None else "")
-    title_norm = _normalize_text(item.title)
-    memory_norm = _normalize_text(item.memory)
-    storage_norm = _normalize_text(item.storage)
-    price_norm = _normalize_price(item.price)
-    url_norm = _normalize_url(item.url)
 
-    listing_id = _extract_listing_id(
-        item.url,
-        fallback_parts=[title_norm, url_norm, price_norm],
-    )
-    config_id = _build_config_id(
-        family_norm=family_norm,
-        chip_norm=chip_norm,
-        cpu_norm=cpu_norm,
-        gpu_norm=gpu_norm,
-        memory_norm=memory_norm,
-        storage_norm=storage_norm,
-    )
-    config_fp = _short_hash([config_id, title_norm])
-    price_fp = _short_hash([config_fp, price_norm])
-    listing_fp = _short_hash([listing_id, config_fp, price_norm, url_norm])
-
-    return MatchRecord(
-        listing_id=listing_id,
-        config_id=config_id,
-        fingerprint=listing_fp,
-        config_fingerprint=config_fp,
-        price_fingerprint=price_fp,
-        title=item.title,
-        family=item.family,
-        chip=item.chip,
-        cpu_cores=item.cpu_cores,
-        gpu_cores=item.gpu_cores,
-        memory=item.memory,
-        storage=item.storage,
-        price=item.price,
-        url=item.url,
-        source=item.source,
-        first_seen_at="",
-        last_seen_at="",
-    )
+    for keyword in keywords:
+        key_norm = _normalize_text(keyword)
+        if not key_norm:
+            continue
+        if _contains_phrase(title_norm, key_norm):
+            return True
+        if family_norm and key_norm == family_norm:
+            return True
+        if chip_norm and _contains_phrase(chip_norm, key_norm):
+            return True
+    return False
 
 
-def build_match_records(items: list[ProductEntry]) -> list[MatchRecord]:
-    deduped: dict[str, MatchRecord] = {}
-    for item in items:
-        record = build_match_record(item)
-        deduped[record.listing_id] = record
-    return list(deduped.values())
+def _find_state(session: Session, key: str) -> AppState | None:
+    # Check pending objects first so repeated updates in the same transaction
+    # reuse one row instead of staging duplicate INSERTs for the same PK.
+    for pending in session.new:
+        if isinstance(pending, AppState) and pending.key == key:
+            return pending
+    return session.get(AppState, key)
 
 
-def load_seen_fingerprints(state_file: Path) -> set[str]:
-    if not state_file.exists():
-        return set()
+def _get_state_str(session: Session, key: str, default: str = "") -> str:
+    row = _find_state(session, key)
+    if row is None:
+        return default
+    return row.value
 
-    try:
-        with state_file.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except json.JSONDecodeError:
-        logger.warning("State file is invalid JSON. Starting from empty seen fingerprints.")
-        return set()
-    except OSError as exc:
-        logger.exception("Failed reading state file: %s", exc)
-        return set()
 
-    if isinstance(payload, dict):
-        values = payload.get("seen_fingerprints") or payload.get("seen_ids") or []
+def _set_state(session: Session, key: str, value: str) -> None:
+    row = _find_state(session, key)
+    if row is None:
+        row = AppState(key=key, value=value)
+        session.add(row)
     else:
-        values = []
-    return {str(value) for value in values}
+        row.value = value
 
 
-def save_seen_fingerprints(state_file: Path, seen_fingerprints: set[str]) -> None:
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "seen_fingerprints": sorted(seen_fingerprints),
-        "updated_at": _timestamp_now(),
-    }
-    with state_file.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-
-def load_current_matches(current_matches_file: Path) -> list[MatchRecord]:
-    if not current_matches_file.exists():
-        return []
-
+def _get_state_int(session: Session, key: str, default: int = 0) -> int:
+    raw = _get_state_str(session, key, str(default)).strip()
     try:
-        with current_matches_file.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except json.JSONDecodeError:
-        logger.warning("Current matches file is invalid JSON. Ignoring previous current matches.")
-        return []
-    except OSError as exc:
-        logger.exception("Failed reading current matches file: %s", exc)
-        return []
-
-    raw_items = payload.get("items", []) if isinstance(payload, dict) else []
-    records: list[MatchRecord] = []
-
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        try:
-            records.append(
-                MatchRecord(
-                    listing_id=str(item.get("listing_id") or ""),
-                    config_id=str(item.get("config_id") or ""),
-                    fingerprint=str(item.get("fingerprint") or ""),
-                    config_fingerprint=str(item.get("config_fingerprint") or ""),
-                    price_fingerprint=str(item.get("price_fingerprint") or ""),
-                    title=str(item.get("title") or ""),
-                    family=item.get("family") or None,
-                    chip=item.get("chip") or None,
-                    cpu_cores=int(item["cpu_cores"]) if item.get("cpu_cores") is not None else None,
-                    gpu_cores=int(item["gpu_cores"]) if item.get("gpu_cores") is not None else None,
-                    memory=item.get("memory") or None,
-                    storage=item.get("storage") or None,
-                    price=item.get("price") or None,
-                    url=str(item.get("url") or ""),
-                    source=str(item.get("source") or ""),
-                    first_seen_at=str(item.get("first_seen_at") or ""),
-                    last_seen_at=str(item.get("last_seen_at") or ""),
-                )
-            )
-        except Exception:
-            continue
-
-    return [
-        record
-        for record in records
-        if record.fingerprint and record.title and record.url and record.listing_id
-    ]
+        return max(int(raw), 0)
+    except ValueError:
+        return default
 
 
-def save_current_matches(current_matches_file: Path, records: list[MatchRecord]) -> None:
-    current_matches_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "updated_at": _timestamp_now(),
-        "count": len(records),
-        "items": [asdict(record) for record in sorted(records, key=lambda rec: rec.fingerprint)],
-    }
-    with current_matches_file.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+def _set_state_int(session: Session, key: str, value: int) -> None:
+    _set_state(session, key, str(max(value, 0)))
 
 
-def _parse_utc_iso(value: str | None) -> datetime | None:
-    raw = (value or "").strip()
+def _get_state_bool(session: Session, key: str, default: bool = False) -> bool:
+    raw = _get_state_str(session, key, "true" if default else "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _set_state_bool(session: Session, key: str, value: bool) -> None:
+    _set_state(session, key, "true" if value else "false")
+
+
+def _get_state_datetime(session: Session, key: str) -> datetime | None:
+    raw = _get_state_str(session, key, "").strip()
     if not raw:
         return None
     candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
@@ -263,381 +167,249 @@ def _parse_utc_iso(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def reconcile_current_match_timestamps(
-    current_records: list[MatchRecord],
-    previous_records: list[MatchRecord],
-    *,
-    now: datetime | None = None,
-) -> list[MatchRecord]:
-    now_utc = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
-    previous_by_listing = {record.listing_id: record for record in previous_records}
-    reconciled: list[MatchRecord] = []
+def _set_state_datetime(session: Session, key: str, value: datetime) -> None:
+    _set_state(session, key, value.astimezone(UTC).isoformat())
 
-    for record in current_records:
-        previous = previous_by_listing.get(record.listing_id)
-        first_seen_at = previous.first_seen_at if previous and previous.first_seen_at else now_utc
-        reconciled.append(
-            MatchRecord(
-                listing_id=record.listing_id,
-                config_id=record.config_id,
-                fingerprint=record.fingerprint,
-                config_fingerprint=record.config_fingerprint,
-                price_fingerprint=record.price_fingerprint,
-                title=record.title,
-                family=record.family,
-                chip=record.chip,
-                cpu_cores=record.cpu_cores,
-                gpu_cores=record.gpu_cores,
-                memory=record.memory,
-                storage=record.storage,
-                price=record.price,
-                url=record.url,
-                source=record.source,
-                first_seen_at=first_seen_at,
-                last_seen_at=now_utc,
+
+def create_poll_run(session: Session, *, started_at: datetime | None = None) -> PollRun:
+    run = PollRun(started_at=_utc_now(started_at), status="running")
+    session.add(run)
+    session.flush()
+    return run
+
+
+def finish_poll_run_success(
+    poll_run: PollRun,
+    *,
+    parser_source: str,
+    total_products_found: int,
+    relevant_products_found: int,
+    finished_at: datetime | None = None,
+) -> None:
+    poll_run.finished_at = _utc_now(finished_at)
+    poll_run.parser_source = parser_source
+    poll_run.total_products_found = total_products_found
+    poll_run.relevant_products_found = relevant_products_found
+    poll_run.status = "success"
+    poll_run.error_message = None
+
+
+def finish_poll_run_failure(
+    poll_run: PollRun,
+    *,
+    error_message: str,
+    parser_source: str | None = None,
+    total_products_found: int = 0,
+    relevant_products_found: int = 0,
+    finished_at: datetime | None = None,
+) -> None:
+    poll_run.finished_at = _utc_now(finished_at)
+    poll_run.parser_source = parser_source
+    poll_run.total_products_found = total_products_found
+    poll_run.relevant_products_found = relevant_products_found
+    poll_run.status = "failure"
+    poll_run.error_message = error_message[:2000]
+
+
+def get_preferred_parser(session: Session) -> str | None:
+    value = _get_state_str(session, STATE_PREFERRED_PARSER, "").strip()
+    return value or None
+
+
+def set_preferred_parser(session: Session, parser_source: str) -> None:
+    _set_state(session, STATE_PREFERRED_PARSER, parser_source)
+
+
+def sync_inventory_snapshot(
+    session: Session,
+    *,
+    poll_run_id: int,
+    products: list[ProductEntry],
+    alert_keywords: list[str],
+    now: datetime | None = None,
+) -> InventorySyncResult:
+    observed_at = _utc_now(now)
+    products_by_listing: dict[str, ProductEntry] = {}
+    for product in products:
+        listing_key = _extract_listing_key(product)
+        products_by_listing[listing_key] = product
+
+    new_alert_products: list[ProductEntry] = []
+    removed_alert_products: list[ProductEntry] = []
+    relevant_products_found = 0
+
+    existing_available_stmt: Select[tuple[Listing]] = select(Listing).where(Listing.last_known_available.is_(True))
+    existing_available = session.scalars(existing_available_stmt).all()
+    existing_available_by_key = {listing.listing_key: listing for listing in existing_available}
+
+    for listing_key, product in products_by_listing.items():
+        is_relevant = matches_alert_filter(product, alert_keywords)
+        if is_relevant:
+            relevant_products_found += 1
+
+        config_key = _build_config_key(product)
+        config = session.scalar(select(ProductConfig).where(ProductConfig.config_key == config_key))
+        if config is None:
+            config = ProductConfig(
+                config_key=config_key,
+                family=product.family,
+                title_normalized=_normalize_text(product.title),
+                chip=product.chip,
+                cpu_cores=product.cpu_cores,
+                gpu_cores=product.gpu_cores,
+                memory_gb=_extract_memory_gb(product.memory),
+                storage_gb=_extract_storage_gb(product.storage),
+                raw_title_example=product.title,
+            )
+            session.add(config)
+            session.flush()
+        else:
+            config.family = product.family
+            config.title_normalized = _normalize_text(product.title)
+            config.chip = product.chip
+            config.cpu_cores = product.cpu_cores
+            config.gpu_cores = product.gpu_cores
+            config.memory_gb = _extract_memory_gb(product.memory)
+            config.storage_gb = _extract_storage_gb(product.storage)
+            config.raw_title_example = product.title
+
+        listing = session.scalar(select(Listing).where(Listing.listing_key == listing_key))
+        newly_available = False
+        if listing is None:
+            listing = Listing(
+                listing_key=listing_key,
+                product_config_id=config.id,
+                title=product.title,
+                url=product.url,
+                price_text=product.price,
+                first_seen_at=observed_at,
+                last_seen_at=observed_at,
+                disappeared_at=None,
+                last_known_available=True,
+            )
+            session.add(listing)
+            session.flush()
+            newly_available = True
+        else:
+            if not listing.last_known_available:
+                newly_available = True
+                listing.first_seen_at = observed_at
+                listing.disappeared_at = None
+            listing.product_config_id = config.id
+            listing.title = product.title
+            listing.url = product.url
+            listing.price_text = product.price
+            listing.last_seen_at = observed_at
+            listing.last_known_available = True
+
+        session.add(
+            ListingObservation(
+                poll_run_id=poll_run_id,
+                listing_id=listing.id,
+                observed_at=observed_at,
+                price_text=product.price,
+                available=True,
             )
         )
 
-    return reconciled
+        if newly_available and is_relevant:
+            new_alert_products.append(product)
 
-
-def load_listing_history(history_file: Path) -> list[dict[str, object]]:
-    if not history_file.exists():
-        return []
-    try:
-        with history_file.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
-
-    if not isinstance(payload, dict):
-        return []
-    events = payload.get("events")
-    if not isinstance(events, list):
-        return []
-    return [event for event in events if isinstance(event, dict)]
-
-
-def append_listing_history_events(history_file: Path, removed_matches: list[RemovedMatch]) -> None:
-    if not removed_matches:
-        return
-
-    existing = load_listing_history(history_file)
-    for removed in removed_matches:
-        existing.append(
-            {
-                "listing_id": removed.record.listing_id,
-                "config_id": removed.record.config_id,
-                "title": removed.record.title,
-                "url": removed.record.url,
-                "price": removed.record.price,
-                "family": removed.record.family,
-                "chip": removed.record.chip,
-                "cpu_cores": removed.record.cpu_cores,
-                "gpu_cores": removed.record.gpu_cores,
-                "memory": removed.record.memory,
-                "storage": removed.record.storage,
-                "source": removed.record.source,
-                "first_seen_at": removed.record.first_seen_at,
-                "last_seen_at": removed.record.last_seen_at,
-                "disappeared_at": removed.disappeared_at,
-                "dwell_seconds": removed.dwell_seconds,
-            }
+    current_listing_keys = set(products_by_listing.keys())
+    removed_listings = [
+        listing
+        for key, listing in existing_available_by_key.items()
+        if key not in current_listing_keys
+    ]
+    for listing in removed_listings:
+        listing.last_known_available = False
+        listing.disappeared_at = observed_at
+        session.add(
+            ListingObservation(
+                poll_run_id=poll_run_id,
+                listing_id=listing.id,
+                observed_at=observed_at,
+                price_text=listing.price_text,
+                available=False,
+            )
         )
 
-    history_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "updated_at": _timestamp_now(),
-        "event_count": len(existing),
-        "events": existing,
-    }
-    with history_file.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-
-def _runtime_meta_defaults() -> dict[str, object]:
-    return {
-        "preferred_parser": "",
-        "last_run_at": "",
-        "last_successful_notification_at": "",
-        "startup_notification_sent": False,
-        "total_poll_runs": 0,
-        "runs_since_last_successful_notification": 0,
-        "zero_match_runs_since_last_successful_notification": 0,
-        "matching_runs_since_last_successful_notification": 0,
-        "matching_products_seen_since_last_successful_notification": 0,
-        "removed_alerted_fingerprints": [],
-    }
-
-
-def _coerce_int(value: object, default: int = 0) -> int:
-    try:
-        parsed = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= 0 else default
-
-
-def _coerce_bool(value: object, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return default
-
-
-def load_runtime_meta(meta_file: Path) -> dict[str, object]:
-    if not meta_file.exists():
-        return _runtime_meta_defaults()
-
-    try:
-        with meta_file.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return _runtime_meta_defaults()
-
-    if not isinstance(payload, dict):
-        return _runtime_meta_defaults()
-
-    defaults = _runtime_meta_defaults()
-    return {
-        "preferred_parser": str(payload.get("preferred_parser") or defaults["preferred_parser"]),
-        "last_run_at": str(payload.get("last_run_at") or defaults["last_run_at"]),
-        "last_successful_notification_at": str(
-            payload.get("last_successful_notification_at")
-            or defaults["last_successful_notification_at"]
-        ),
-        "startup_notification_sent": _coerce_bool(
-            payload.get("startup_notification_sent"),
-            default=bool(defaults["startup_notification_sent"]),
-        ),
-        "total_poll_runs": _coerce_int(payload.get("total_poll_runs")),
-        "runs_since_last_successful_notification": _coerce_int(
-            payload.get("runs_since_last_successful_notification")
-        ),
-        "zero_match_runs_since_last_successful_notification": _coerce_int(
-            payload.get("zero_match_runs_since_last_successful_notification")
-        ),
-        "matching_runs_since_last_successful_notification": _coerce_int(
-            payload.get("matching_runs_since_last_successful_notification")
-        ),
-        "matching_products_seen_since_last_successful_notification": _coerce_int(
-            payload.get("matching_products_seen_since_last_successful_notification")
-        ),
-        "removed_alerted_fingerprints": [
-            str(item)
-            for item in payload.get("removed_alerted_fingerprints", [])
-            if isinstance(item, str) and item.strip()
-        ]
-        if isinstance(payload.get("removed_alerted_fingerprints"), list)
-        else [],
-    }
-
-
-def save_runtime_meta(
-    meta_file: Path,
-    *,
-    preferred_parser: str | None = None,
-    last_successful_notification_at: str | None = None,
-    reset_last_successful_notification: bool = False,
-    startup_notification_sent: bool | None = None,
-    total_poll_runs: int | None = None,
-    runs_since_last_successful_notification: int | None = None,
-    zero_match_runs_since_last_successful_notification: int | None = None,
-    matching_runs_since_last_successful_notification: int | None = None,
-    matching_products_seen_since_last_successful_notification: int | None = None,
-    removed_alerted_fingerprints: set[str] | list[str] | None = None,
-    reset_since_last_successful_notification: bool = False,
-    last_run_at: str | None = None,
-) -> None:
-    existing = load_runtime_meta(meta_file)
-    parser_value = str(existing.get("preferred_parser", ""))
-    if preferred_parser is not None:
-        parser_value = preferred_parser
-
-    successful_value = str(existing.get("last_successful_notification_at", ""))
-    if reset_last_successful_notification:
-        successful_value = ""
-    elif last_successful_notification_at is not None:
-        successful_value = last_successful_notification_at
-
-    startup_sent = _coerce_bool(
-        existing.get("startup_notification_sent"),
-        default=False,
-    )
-    if startup_notification_sent is not None:
-        startup_sent = startup_notification_sent
-
-    total_runs_value = _coerce_int(existing.get("total_poll_runs"))
-    if total_poll_runs is not None:
-        total_runs_value = max(total_poll_runs, 0)
-
-    runs_since_value = _coerce_int(
-        existing.get("runs_since_last_successful_notification")
-    )
-    zero_match_since_value = _coerce_int(
-        existing.get("zero_match_runs_since_last_successful_notification")
-    )
-    matching_runs_since_value = _coerce_int(
-        existing.get("matching_runs_since_last_successful_notification")
-    )
-    matching_products_since_value = _coerce_int(
-        existing.get("matching_products_seen_since_last_successful_notification")
-    )
-
-    if runs_since_last_successful_notification is not None:
-        runs_since_value = max(runs_since_last_successful_notification, 0)
-    if zero_match_runs_since_last_successful_notification is not None:
-        zero_match_since_value = max(zero_match_runs_since_last_successful_notification, 0)
-    if matching_runs_since_last_successful_notification is not None:
-        matching_runs_since_value = max(matching_runs_since_last_successful_notification, 0)
-    if matching_products_seen_since_last_successful_notification is not None:
-        matching_products_since_value = max(
-            matching_products_seen_since_last_successful_notification,
-            0,
+        config = listing.product_config
+        dwell_seconds = max(0, int((listing.last_seen_at - listing.first_seen_at).total_seconds()))
+        removed_product = ProductEntry(
+            id=listing.listing_key,
+            title=listing.title,
+            url=listing.url,
+            price=listing.price_text,
+            family=config.family if config else None,
+            chip=config.chip if config else None,
+            cpu_cores=config.cpu_cores if config else None,
+            gpu_cores=config.gpu_cores if config else None,
+            memory=f"{config.memory_gb}GB RAM" if config and config.memory_gb else None,
+            storage=f"{config.storage_gb // 1024}TB SSD"
+            if config and config.storage_gb and config.storage_gb % 1024 == 0 and config.storage_gb >= 1024
+            else (f"{config.storage_gb}GB SSD" if config and config.storage_gb else None),
+            raw_text="",
+            source="db",
+            dwell_seconds=dwell_seconds,
         )
+        if matches_alert_filter(removed_product, alert_keywords):
+            removed_alert_products.append(removed_product)
 
-    if reset_since_last_successful_notification:
-        runs_since_value = 0
-        zero_match_since_value = 0
-        matching_runs_since_value = 0
-        matching_products_since_value = 0
-
-    removed_alerted_value = {
-        str(item).strip()
-        for item in (existing.get("removed_alerted_fingerprints") or [])
-        if str(item).strip()
-    }
-    if removed_alerted_fingerprints is not None:
-        removed_alerted_value = {
-            str(item).strip()
-            for item in removed_alerted_fingerprints
-            if str(item).strip()
-        }
-
-    meta_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "preferred_parser": parser_value,
-        "last_run_at": last_run_at or _timestamp_now(),
-        "last_successful_notification_at": successful_value,
-        "startup_notification_sent": startup_sent,
-        "total_poll_runs": total_runs_value,
-        "runs_since_last_successful_notification": runs_since_value,
-        "zero_match_runs_since_last_successful_notification": zero_match_since_value,
-        "matching_runs_since_last_successful_notification": matching_runs_since_value,
-        "matching_products_seen_since_last_successful_notification": matching_products_since_value,
-        "removed_alerted_fingerprints": sorted(removed_alerted_value),
-    }
-    with meta_file.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-
-def get_last_successful_notification_at(runtime_meta: dict[str, object]) -> datetime | None:
-    raw = (runtime_meta.get("last_successful_notification_at") or "").strip()
-    if not raw:
-        return None
-
-    candidate = raw
-    if candidate.endswith("Z"):
-        candidate = f"{candidate[:-1]}+00:00"
-
-    try:
-        parsed = datetime.fromisoformat(candidate)
-    except ValueError:
-        return None
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def update_last_successful_notification_at(
-    meta_file: Path,
-    *,
-    timestamp: datetime | None = None,
-    preferred_parser: str | None = None,
-) -> str:
-    timestamp_utc = (timestamp or datetime.now(UTC)).astimezone(UTC).isoformat()
-    save_runtime_meta(
-        meta_file,
-        preferred_parser=preferred_parser,
-        last_successful_notification_at=timestamp_utc,
+    return InventorySyncResult(
+        new_alert_products=new_alert_products,
+        removed_alert_products=removed_alert_products,
+        total_products_found=len(products_by_listing),
+        relevant_products_found=relevant_products_found,
     )
-    return timestamp_utc
 
 
-def get_removed_alerted_fingerprints(runtime_meta: dict[str, object]) -> set[str]:
-    raw = runtime_meta.get("removed_alerted_fingerprints")
-    if not isinstance(raw, list):
-        return set()
-    return {str(item).strip() for item in raw if isinstance(item, str) and item.strip()}
-
-
-def was_startup_notification_sent(runtime_meta: dict[str, object]) -> bool:
-    return _coerce_bool(runtime_meta.get("startup_notification_sent"), default=False)
-
-
-def increment_run_counters(
-    meta_file: Path,
-    *,
-    had_matches: bool,
-    match_count: int,
-    preferred_parser: str | None = None,
-) -> dict[str, object]:
-    existing = load_runtime_meta(meta_file)
-
-    total_runs = _coerce_int(existing.get("total_poll_runs")) + 1
-    runs_since = _coerce_int(existing.get("runs_since_last_successful_notification")) + 1
-    zero_match_runs = _coerce_int(
-        existing.get("zero_match_runs_since_last_successful_notification")
-    )
-    matching_runs = _coerce_int(
-        existing.get("matching_runs_since_last_successful_notification")
-    )
-    matching_products_seen = _coerce_int(
-        existing.get("matching_products_seen_since_last_successful_notification")
-    )
+def increment_run_counters(session: Session, *, had_matches: bool, match_count: int) -> None:
+    total_runs = _get_state_int(session, STATE_TOTAL_RUNS) + 1
+    runs_since = _get_state_int(session, STATE_RUNS_SINCE_NOTIFY) + 1
+    zero_match_runs = _get_state_int(session, STATE_ZERO_MATCH_RUNS)
+    matching_runs = _get_state_int(session, STATE_MATCHING_RUNS)
+    matching_products = _get_state_int(session, STATE_MATCHING_PRODUCTS)
 
     if had_matches:
         matching_runs += 1
-        matching_products_seen += max(match_count, 0)
+        matching_products += max(match_count, 0)
     else:
         zero_match_runs += 1
 
-    save_runtime_meta(
-        meta_file,
-        preferred_parser=preferred_parser,
-        total_poll_runs=total_runs,
-        runs_since_last_successful_notification=runs_since,
-        zero_match_runs_since_last_successful_notification=zero_match_runs,
-        matching_runs_since_last_successful_notification=matching_runs,
-        matching_products_seen_since_last_successful_notification=matching_products_seen,
-    )
-    return load_runtime_meta(meta_file)
+    _set_state_int(session, STATE_TOTAL_RUNS, total_runs)
+    _set_state_int(session, STATE_RUNS_SINCE_NOTIFY, runs_since)
+    _set_state_int(session, STATE_ZERO_MATCH_RUNS, zero_match_runs)
+    _set_state_int(session, STATE_MATCHING_RUNS, matching_runs)
+    _set_state_int(session, STATE_MATCHING_PRODUCTS, matching_products)
 
 
-def record_successful_notification(
-    meta_file: Path,
-    *,
-    timestamp: datetime | None = None,
-    preferred_parser: str | None = None,
-    startup_notification_sent: bool | None = None,
-    removed_alerted_fingerprints: set[str] | list[str] | None = None,
-) -> str:
-    timestamp_utc = (timestamp or datetime.now(UTC)).astimezone(UTC).isoformat()
-    save_runtime_meta(
-        meta_file,
-        preferred_parser=preferred_parser,
-        last_successful_notification_at=timestamp_utc,
-        startup_notification_sent=startup_notification_sent,
-        removed_alerted_fingerprints=removed_alerted_fingerprints,
-        reset_since_last_successful_notification=True,
+def get_heartbeat_counters(session: Session) -> tuple[int, int, int, int]:
+    return (
+        _get_state_int(session, STATE_RUNS_SINCE_NOTIFY),
+        _get_state_int(session, STATE_ZERO_MATCH_RUNS),
+        _get_state_int(session, STATE_MATCHING_RUNS),
+        _get_state_int(session, STATE_MATCHING_PRODUCTS),
     )
-    return timestamp_utc
+
+
+def get_last_successful_notification_at(session: Session) -> datetime | None:
+    return _get_state_datetime(session, STATE_LAST_SUCCESS_AT)
+
+
+def was_startup_notification_sent(session: Session) -> bool:
+    return _get_state_bool(session, STATE_STARTUP_SENT, default=False)
+
+
+def record_successful_notification(session: Session, *, startup_notification_sent: bool | None = None) -> None:
+    now = _utc_now()
+    _set_state_datetime(session, STATE_LAST_SUCCESS_AT, now)
+    if startup_notification_sent is not None:
+        _set_state_bool(session, STATE_STARTUP_SENT, startup_notification_sent)
+    _set_state_int(session, STATE_RUNS_SINCE_NOTIFY, 0)
+    _set_state_int(session, STATE_ZERO_MATCH_RUNS, 0)
+    _set_state_int(session, STATE_MATCHING_RUNS, 0)
+    _set_state_int(session, STATE_MATCHING_PRODUCTS, 0)
 
 
 def is_heartbeat_due(
@@ -652,91 +424,17 @@ def is_heartbeat_due(
     if heartbeat_interval_hours <= 0:
         return True
 
-    reference_now = now or datetime.now(UTC)
+    reference_now = _utc_now(now)
     if last_successful_notification_at is None:
         return True
 
     elapsed_seconds = (reference_now - last_successful_notification_at).total_seconds()
-    threshold_seconds = heartbeat_interval_hours * 3600
-    return elapsed_seconds >= threshold_seconds
+    return elapsed_seconds >= heartbeat_interval_hours * 3600
 
 
-def archive_state(state_file: Path, archive_dir: Path | None = None) -> Path | None:
-    if not state_file.exists():
-        return None
-
-    destination_dir = archive_dir or (state_file.parent / "archive")
-    destination_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    archive_path = destination_dir / f"seen_items_{timestamp}.json"
-    archive_path.write_text(state_file.read_text(encoding="utf-8"), encoding="utf-8")
-    return archive_path
-
-
-def reset_state(state_file: Path, archive_dir: Path | None = None) -> Path | None:
-    archived = archive_state(state_file, archive_dir=archive_dir)
-    save_seen_fingerprints(state_file, set())
-    return archived
-
-
-def detect_match_changes(
-    current_records: list[MatchRecord],
-    previous_records: list[MatchRecord],
-    seen_fingerprints: set[str],
-) -> list[MatchChange]:
-    previous_by_config: dict[str, list[MatchRecord]] = {}
-    for record in previous_records:
-        previous_by_config.setdefault(record.config_id, []).append(record)
-
-    changes: list[MatchChange] = []
-
-    for record in current_records:
-        if record.fingerprint in seen_fingerprints:
-            continue
-
-        previous_same_config = previous_by_config.get(record.config_id, [])
-        if not previous_same_config:
-            change_type = "new_config"
-        else:
-            previous_prices = {item.price_fingerprint for item in previous_same_config}
-            previous_listings = {item.listing_id for item in previous_same_config}
-
-            if record.price_fingerprint not in previous_prices:
-                change_type = "price_change"
-            elif record.listing_id not in previous_listings:
-                change_type = "relisted"
-            else:
-                change_type = "new_listing"
-
-        changes.append(MatchChange(change_type=change_type, record=record))
-
-    return changes
-
-
-def detect_removed_matches(
-    current_records: list[MatchRecord],
-    previous_records: list[MatchRecord],
-    *,
-    now: datetime | None = None,
-) -> list[RemovedMatch]:
-    now_utc = (now or datetime.now(UTC)).astimezone(UTC)
-    current_listing_ids = {record.listing_id for record in current_records}
-    removed: list[RemovedMatch] = []
-
-    for previous in previous_records:
-        if not previous.listing_id or previous.listing_id in current_listing_ids:
-            continue
-
-        first_seen = _parse_utc_iso(previous.first_seen_at) or now_utc
-        last_seen = _parse_utc_iso(previous.last_seen_at) or first_seen
-        dwell_seconds = max(0, int((last_seen - first_seen).total_seconds()))
-        removed.append(
-            RemovedMatch(
-                record=previous,
-                disappeared_at=now_utc.isoformat(),
-                dwell_seconds=dwell_seconds,
-            )
-        )
-
-    return sorted(removed, key=lambda item: item.record.listing_id)
+def reset_database_state(session: Session) -> None:
+    session.query(ListingObservation).delete()
+    session.query(Listing).delete()
+    session.query(ProductConfig).delete()
+    session.query(PollRun).delete()
+    session.query(AppState).delete()

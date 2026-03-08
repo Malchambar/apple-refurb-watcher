@@ -102,6 +102,14 @@ def _extract_family(text: str) -> str | None:
         return "Mac Studio"
     if "mac mini" in lowered:
         return "Mac mini"
+    if "macbook air" in lowered:
+        return "MacBook Air"
+    if "macbook pro" in lowered:
+        return "MacBook Pro"
+    if "imac" in lowered:
+        return "iMac"
+    if "mac pro" in lowered:
+        return "Mac Pro"
     return None
 
 
@@ -142,7 +150,9 @@ def _build_entry(
         return None
 
     details_text = " ".join(part for part in [normalized_title, raw_text, price or ""] if part)
-    family = _extract_family(details_text)
+    # Family matching should come from the visible title to avoid false positives
+    # from verbose embedded JSON metadata.
+    family = _extract_family(normalized_title)
     chip = _extract_chip(details_text)
     cpu_cores = _extract_cpu_cores(details_text)
     gpu_cores = _extract_gpu_cores(details_text)
@@ -514,7 +524,6 @@ def parse_products(
 
 def check_refurb_listings(
     source_url: str,
-    keywords: list[str],
     timeout: float,
     preferred_source: str | None = None,
 ) -> ParseResult:
@@ -525,14 +534,9 @@ def check_refurb_listings(
         timeout=timeout,
         preferred_source=preferred_source,
     )
-    relevant_products = _filter_relevant_products(parse_result.products, keywords)
-
     logger.info(
-        "Parser summary: source=%s total_products=%s relevant_products=%s include_studio=%s",
+        "Parser summary: source=%s total_products=%s",
         parse_result.source,
         len(parse_result.products),
-        len(relevant_products),
-        any("studio" in keyword.lower() for keyword in keywords),
     )
-
-    return ParseResult(source=parse_result.source, products=relevant_products)
+    return parse_result

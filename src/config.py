@@ -24,7 +24,7 @@ class AppConfig:
     heartbeat_enabled: bool
     heartbeat_interval_hours: float
     startup_notify_enabled: bool
-    state_file: Path
+    database_url: str
     log_file: Path
     request_timeout: float
     force_notify: bool
@@ -71,7 +71,7 @@ def load_config() -> AppConfig:
     except ValueError:
         heartbeat_interval_hours = 6.0
 
-    state_file = Path(os.getenv("STATE_FILE", "data/seen_items.json"))
+    database_url = os.getenv("DATABASE_URL", "sqlite:///data/apple_refurb_watcher.db").strip()
     log_file = Path(os.getenv("LOG_FILE", "logs/watcher.log"))
     force_notify = _parse_bool(
         os.getenv("FORCE_NOTIFY"),
@@ -95,7 +95,7 @@ def load_config() -> AppConfig:
         heartbeat_enabled=heartbeat_enabled,
         heartbeat_interval_hours=heartbeat_interval_hours,
         startup_notify_enabled=startup_notify_enabled,
-        state_file=state_file,
+        database_url=database_url,
         log_file=log_file,
         request_timeout=request_timeout,
         force_notify=force_notify,
@@ -106,7 +106,7 @@ def load_config() -> AppConfig:
 def log_config_summary(config: AppConfig) -> None:
     logger.info("Config loaded from .env path: %s exists=%s", config.env_file, config.env_file.exists())
     logger.info(
-        "Config summary: keywords=%s enable_pushover=%s enable_imessage=%s force_notify=%s startup_notify_enabled=%s heartbeat_enabled=%s heartbeat_interval_hours=%s timeout=%s",
+        "Config summary: alert_keywords=%s enable_pushover=%s enable_imessage=%s force_notify=%s startup_notify_enabled=%s heartbeat_enabled=%s heartbeat_interval_hours=%s timeout=%s database_url=%s",
         ", ".join(config.match_keywords),
         config.enable_pushover,
         config.enable_imessage,
@@ -115,6 +115,7 @@ def log_config_summary(config: AppConfig) -> None:
         config.heartbeat_enabled,
         config.heartbeat_interval_hours,
         config.request_timeout,
+        config.database_url,
     )
     logger.info(
         "Credential presence: pushover_user_key_present=%s pushover_app_token_present=%s imessage_recipient_present=%s",

@@ -10,6 +10,7 @@ venv/
 
 # Runtime data
 data/*.json
+data/*.db
 data/archive/*
 !data/archive/.gitkeep
 
