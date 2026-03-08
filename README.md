@@ -68,6 +68,32 @@ cp .env.example .env
 python -m src.main
 ```
 
+## Using The JSON MVP Tag
+
+If you want the original lightweight JSON-based watcher (before the SQLAlchemy/SQLite refactor), use the `v1-json-mvp` tag.
+
+- Use `main` if you want the current/default project version.
+- Use `v1-json-mvp` if you want the simpler baseline MVP.
+
+Clone directly at the tag:
+
+```bash
+git clone --branch v1-json-mvp --depth 1 https://github.com/Malchambar/apple-refurb-watcher.git
+```
+
+Or switch an existing clone to the tag:
+
+```bash
+git fetch --tags
+git checkout v1-json-mvp
+```
+
+Create your own working branch from the tag:
+
+```bash
+git checkout -b my-json-mvp-work v1-json-mvp
+```
+
 ## Environment Configuration
 
 All runtime config comes from `.env`.
