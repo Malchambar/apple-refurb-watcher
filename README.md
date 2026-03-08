@@ -47,7 +47,7 @@
 
 - Python 3.11+
 - macOS for `launchd` automation (manual runs work anywhere Python dependencies work)
-- Dependencies in `requirements.txt` (currently `beautifulsoup4`, `python-dotenv`, `requests`)
+- Dependencies in `requirements.txt` (runtime: `beautifulsoup4`, `python-dotenv`, `requests`; tooling: `ruff`, `black`)
 - Optional Pushover account/app if you want push alerts
 
 ## Code Style and Linting
