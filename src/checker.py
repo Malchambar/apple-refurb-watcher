@@ -211,13 +211,17 @@ def _discover_json_feed_urls(html: str, source_url: str) -> list[str]:
             if value:
                 candidates.add(_normalize_url(source_url, value))
 
-    for script in soup.select('script[type="application/json"], script[type="application/ld+json"]'):
+    for script in soup.select(
+        'script[type="application/json"], script[type="application/ld+json"]'
+    ):
         text = script.get_text(" ", strip=True)
         if not text:
             continue
         for match in re.findall(r"['\"](https?://[^'\"]+|/[^'\"]+)['\"]", text):
             lowered = match.lower()
-            if any(token in lowered for token in [".json", "api", "refurb", "inventory", "products"]):
+            if any(
+                token in lowered for token in [".json", "api", "refurb", "inventory", "products"]
+            ):
                 candidates.add(_normalize_url(source_url, match))
 
     filtered = [url for url in candidates if url.startswith("http")]
@@ -279,7 +283,10 @@ def _extract_entries_from_json(payload: Any, base_url: str, source: str) -> list
                     price=_extract_price_from_object(node),
                     raw_text=json.dumps(node, ensure_ascii=True),
                     source=source,
-                    candidate_id=str(node.get("id") or node.get("sku") or node.get("partNumber") or "") or None,
+                    candidate_id=str(
+                        node.get("id") or node.get("sku") or node.get("partNumber") or ""
+                    )
+                    or None,
                 )
                 if entry:
                     collected.append(entry)
@@ -386,7 +393,8 @@ def try_extract_json_ld(html: str, source_url: str) -> list[ProductEntry]:
                 price=_extract_price_from_object(node.get("offers") or node),
                 raw_text=json.dumps(node, ensure_ascii=True),
                 source="json_ld",
-                candidate_id=str(node.get("sku") or node.get("productID") or node.get("mpn") or "") or None,
+                candidate_id=str(node.get("sku") or node.get("productID") or node.get("mpn") or "")
+                or None,
             )
             if entry:
                 entries.append(entry)
@@ -433,7 +441,9 @@ def try_extract_product_cards(html: str, source_url: str) -> list[ProductEntry]:
             if "/shop/product/" not in _normalize_url(source_url, href):
                 continue
 
-            raw_text = _normalize_title(anchor.parent.get_text(" ", strip=True) if anchor.parent else title)
+            raw_text = _normalize_title(
+                anchor.parent.get_text(" ", strip=True) if anchor.parent else title
+            )
             entry = _build_entry(
                 base_url=source_url,
                 title=title,
@@ -474,9 +484,13 @@ def _is_relevant_model(title: str, include_studio: bool) -> bool:
     return False
 
 
-def _filter_relevant_products(products: list[ProductEntry], keywords: list[str]) -> list[ProductEntry]:
+def _filter_relevant_products(
+    products: list[ProductEntry], keywords: list[str]
+) -> list[ProductEntry]:
     include_studio = any("studio" in keyword.lower() for keyword in keywords)
-    filtered = [item for item in products if _is_relevant_model(item.title, include_studio=include_studio)]
+    filtered = [
+        item for item in products if _is_relevant_model(item.title, include_studio=include_studio)
+    ]
 
     deduped: dict[str, ProductEntry] = {}
     for item in filtered:

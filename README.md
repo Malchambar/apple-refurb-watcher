@@ -50,6 +50,27 @@
 - Dependencies in `requirements.txt` (currently `beautifulsoup4`, `python-dotenv`, `requests`)
 - Optional Pushover account/app if you want push alerts
 
+## Code Style and Linting
+
+This project uses:
+
+- Ruff for linting (including import sorting rules)
+- Black for formatting
+
+Run checks:
+
+```bash
+ruff check .
+black .
+```
+
+Run autofix formatting/lint cleanup:
+
+```bash
+ruff check . --fix
+black .
+```
+
 ## Quick Start
 
 1. Clone the repo.

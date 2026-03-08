@@ -185,7 +185,8 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
 
     if config.force_notify and parse_result.products and not items_to_notify:
         logger.info(
-            "FORCE_NOTIFY enabled. Sending notifications for current matches even though no new fingerprints were detected."
+            "FORCE_NOTIFY enabled. Sending notifications for current matches even though "
+            "no new fingerprints were detected."
         )
         items_to_notify = [
             _to_product_entry(
@@ -245,7 +246,9 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
         startup_notification_sent = False
         heartbeat_sent = False
         if inventory_notification_sent:
-            logger.info("Heartbeat skipped because an inventory notification succeeded in this run.")
+            logger.info(
+                "Heartbeat skipped because an inventory notification succeeded in this run."
+            )
             record_successful_notification(
                 runtime_meta_path,
                 preferred_parser=parse_result.source,
@@ -263,7 +266,9 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
                 else:
                     logger.info("Startup notification attempt did not succeed; continuing.")
             elif config.startup_notify_enabled and startup_already_sent:
-                logger.info("Startup notification already sent for current runtime lifecycle; skipping.")
+                logger.info(
+                    "Startup notification already sent for current runtime lifecycle; skipping."
+                )
 
             if not startup_notification_sent and config.heartbeat_enabled:
                 last_successful_notification_at = get_last_successful_notification_at(runtime_meta)
@@ -305,7 +310,8 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
                         )
                 else:
                     logger.info(
-                        "Heartbeat skipped: recent successful notification exists within %s hour(s).",
+                        "Heartbeat skipped: recent successful notification exists within %s "
+                        "hour(s).",
                         config.heartbeat_interval_hours,
                     )
             elif not startup_notification_sent:

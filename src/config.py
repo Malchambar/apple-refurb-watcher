@@ -48,9 +48,7 @@ def load_config() -> AppConfig:
     env_file = PROJECT_ROOT / ".env"
     load_dotenv(dotenv_path=env_file)
 
-    apple_refurb_url = os.getenv(
-        "APPLE_REFURB_URL", "https://www.apple.com/shop/refurbished/mac"
-    )
+    apple_refurb_url = os.getenv("APPLE_REFURB_URL", "https://www.apple.com/shop/refurbished/mac")
     match_keywords = _parse_keywords(os.getenv("MATCH_KEYWORDS", "Mac mini"))
     enable_pushover = _parse_bool(os.getenv("ENABLE_PUSHOVER"), default=False)
     pushover_user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
@@ -104,9 +102,16 @@ def load_config() -> AppConfig:
 
 
 def log_config_summary(config: AppConfig) -> None:
-    logger.info("Config loaded from .env path: %s exists=%s", config.env_file, config.env_file.exists())
     logger.info(
-        "Config summary: keywords=%s enable_pushover=%s enable_imessage=%s force_notify=%s startup_notify_enabled=%s heartbeat_enabled=%s heartbeat_interval_hours=%s timeout=%s",
+        "Config loaded from .env path: %s exists=%s", config.env_file, config.env_file.exists()
+    )
+    summary_template = (
+        "Config summary: keywords=%s enable_pushover=%s enable_imessage=%s "
+        "force_notify=%s startup_notify_enabled=%s heartbeat_enabled=%s "
+        "heartbeat_interval_hours=%s timeout=%s"
+    )
+    logger.info(
+        summary_template,
         ", ".join(config.match_keywords),
         config.enable_pushover,
         config.enable_imessage,
@@ -116,8 +121,12 @@ def log_config_summary(config: AppConfig) -> None:
         config.heartbeat_interval_hours,
         config.request_timeout,
     )
+    credential_template = (
+        "Credential presence: pushover_user_key_present=%s "
+        "pushover_app_token_present=%s imessage_recipient_present=%s"
+    )
     logger.info(
-        "Credential presence: pushover_user_key_present=%s pushover_app_token_present=%s imessage_recipient_present=%s",
+        credential_template,
         bool(config.pushover_user_key),
         bool(config.pushover_app_token),
         bool(config.imessage_recipient),

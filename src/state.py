@@ -428,13 +428,15 @@ def load_runtime_meta(meta_file: Path) -> dict[str, object]:
         "matching_products_seen_since_last_successful_notification": _coerce_int(
             payload.get("matching_products_seen_since_last_successful_notification")
         ),
-        "removed_alerted_fingerprints": [
-            str(item)
-            for item in payload.get("removed_alerted_fingerprints", [])
-            if isinstance(item, str) and item.strip()
-        ]
-        if isinstance(payload.get("removed_alerted_fingerprints"), list)
-        else [],
+        "removed_alerted_fingerprints": (
+            [
+                str(item)
+                for item in payload.get("removed_alerted_fingerprints", [])
+                if isinstance(item, str) and item.strip()
+            ]
+            if isinstance(payload.get("removed_alerted_fingerprints"), list)
+            else []
+        ),
     }
 
 
@@ -476,9 +478,7 @@ def save_runtime_meta(
     if total_poll_runs is not None:
         total_runs_value = max(total_poll_runs, 0)
 
-    runs_since_value = _coerce_int(
-        existing.get("runs_since_last_successful_notification")
-    )
+    runs_since_value = _coerce_int(existing.get("runs_since_last_successful_notification"))
     zero_match_since_value = _coerce_int(
         existing.get("zero_match_runs_since_last_successful_notification")
     )
@@ -514,9 +514,7 @@ def save_runtime_meta(
     }
     if removed_alerted_fingerprints is not None:
         removed_alerted_value = {
-            str(item).strip()
-            for item in removed_alerted_fingerprints
-            if str(item).strip()
+            str(item).strip() for item in removed_alerted_fingerprints if str(item).strip()
         }
 
     meta_file.parent.mkdir(parents=True, exist_ok=True)
@@ -595,9 +593,7 @@ def increment_run_counters(
     zero_match_runs = _coerce_int(
         existing.get("zero_match_runs_since_last_successful_notification")
     )
-    matching_runs = _coerce_int(
-        existing.get("matching_runs_since_last_successful_notification")
-    )
+    matching_runs = _coerce_int(existing.get("matching_runs_since_last_successful_notification"))
     matching_products_seen = _coerce_int(
         existing.get("matching_products_seen_since_last_successful_notification")
     )

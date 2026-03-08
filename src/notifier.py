@@ -140,7 +140,9 @@ def _format_removed_message(items: list[ProductEntry]) -> str:
     return _format_removed_group_message(items)
 
 
-def send_pushover_alert(config: AppConfig, message: str, *, title: str = "Apple Refurb Alert") -> bool:
+def send_pushover_alert(
+    config: AppConfig, message: str, *, title: str = "Apple Refurb Alert"
+) -> bool:
     logger.info("send_pushover_alert called. enable_pushover=%s", config.enable_pushover)
 
     if not config.enable_pushover:
@@ -206,9 +208,7 @@ def send_imessage_alert(config: AppConfig, message: str, project_root: Path) -> 
         )
         logger.info("iMessage notification sent.")
     except subprocess.CalledProcessError as exc:
-        logger.exception(
-            "Failed to send iMessage notification. stderr=%s", exc.stderr.strip()
-        )
+        logger.exception("Failed to send iMessage notification. stderr=%s", exc.stderr.strip())
 
 
 def notify_new_items(config: AppConfig, items: list[ProductEntry], project_root: Path) -> bool:
