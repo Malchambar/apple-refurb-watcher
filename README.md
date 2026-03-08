@@ -50,21 +50,30 @@
 - Dependencies in `requirements.txt` (runtime: `beautifulsoup4`, `python-dotenv`, `requests`; tooling: `ruff`, `black`)
 - Optional Pushover account/app if you want push alerts
 
-## Code Style and Linting
+## Development Tooling
 
 This project uses:
 
 - Ruff for linting (including import sorting rules)
 - Black for formatting
+- pre-commit to run Ruff and Black automatically before commits
 
-Run checks:
+Setup:
+
+```bash
+pip install -r requirements.txt
+pre-commit install
+pre-commit run --all-files
+```
+
+Run lint/format manually:
 
 ```bash
 ruff check .
 black .
 ```
 
-Run autofix formatting/lint cleanup:
+Autofix examples:
 
 ```bash
 ruff check . --fix

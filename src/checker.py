@@ -238,7 +238,7 @@ def _as_price(value: Any) -> str | None:
         if text.startswith("$"):
             return text
         return _extract_price_from_text(text) or text
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return f"${value:,.2f}".rstrip("0").rstrip(".")
     return None
 
