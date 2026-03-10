@@ -12,6 +12,7 @@
 - Listing/config identity model (`listing_id` vs `config_id`) for lifecycle tracking and future trend analysis.
 - `listing_history.json` events for disappeared listings with dwell-time data.
 - Pushover notifications (plus optional iMessage path already present in code).
+- Outgoing notifications append a compact `Current matches` summary block (newest first, capped with `+N more` when needed).
 - Removed-inventory notifications when previously relevant products disappear from the current snapshot.
 - Startup notification support (`Watcher Started`) for first successful run in a fresh runtime lifecycle.
 - Optional heartbeat notifications when no successful Pushover alert has been sent recently.
@@ -179,6 +180,7 @@ Pushover is the primary alert path in this project.
 - Availability alerts use concise titles like `Mac Studio available` and include parsed config details (chip/CPU/GPU, memory/storage), price, and URL.
 - Removed alerts include dwell time in the title (for example `Mac Studio gone after 3h 12m`) plus key config/price details.
 - Startup notification uses title `Watcher Started` and message `apple-refurb-watcher is running.`.
+- Availability, removed, startup, and heartbeat messages include a compact current-inventory snapshot (`Current matches`) with newest items first and a capped list for message-size safety.
 - Startup notification is sent once for a fresh runtime lifecycle (for example, after reset/reinstall/runtime metadata reset), not every poll.
 - Heartbeat uses title `Watcher Heartbeat` with a compact status summary:
   - polls since last successful notification

@@ -219,6 +219,7 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
             config,
             items_to_notify,
             project_root=PROJECT_ROOT,
+            current_matches=current_records,
         )
         removed_notification_sent = notify_removed_items(
             config,
@@ -240,6 +241,7 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
                 for removed in removed_matches
             ],
             project_root=PROJECT_ROOT,
+            current_matches=current_records,
         )
         inventory_notification_sent = added_notification_sent or removed_notification_sent
 
@@ -256,7 +258,10 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
         else:
             startup_already_sent = was_startup_notification_sent(runtime_meta)
             if config.startup_notify_enabled and not startup_already_sent:
-                startup_notification_sent = send_startup_notification(config)
+                startup_notification_sent = send_startup_notification(
+                    config,
+                    current_matches=current_records,
+                )
                 if startup_notification_sent:
                     record_successful_notification(
                         runtime_meta_path,
@@ -302,6 +307,7 @@ def run_once(*, test_notifier: bool = False, dry_run: bool = False) -> int:
                                 0,
                             )
                         ),
+                        current_matches=current_records,
                     )
                     if heartbeat_sent:
                         record_successful_notification(
